@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
-use std::{i32, i64, u8, vec};
 
 use clap::Parser;
 
@@ -12,62 +11,136 @@ struct Args {
     root_file: PathBuf,
 }
 
-#[derive(Debug)]
-enum Entry {
-    Integer32(i32),
-    Integer64(i64),
-    Text(String),
+// #[derive(Debug)]
+// enum Entry {
+//     Integer32(i32),
+//     Integer64(i64),
+//     Text(String),
+// }
+// impl Entry {
+//     fn convert_chunk(&self, chunk: Vec<u8>) -> Self {
+//         match self {
+//             Self::Integer64(_) => Self::Integer64(<i64>::from_be_bytes(
+//                 chunk.try_into().expect("ouai ouai ouai ouai"),
+//             )),
+//             Self::Integer32(_) => Self::Integer32(<i32>::from_be_bytes(
+//                 chunk.try_into().expect("ouai ouai ouai ouai"),
+//             )),
+//             Self::Text(_) => Self::Text(chunk.iter().map(|i| *i as char).collect::<String>()),
+//         }
+//     }
+// }
+
+//TFileHeader ?
+#[derive(Default, Debug)]
+struct FileHeader {
+    version: i32,
+    begin: i32,
+    end: i32,
+    seekfree: i64,
+    nbytesfree: i32,
+    // nfree this is 4 bytes and should be skippd apparently ?
+    nbytesname: i32,
+    units: i8,
+    compress: i32,
+    seekinfo: i64,
+    nbytesinfo: i32,
 }
-impl Entry {
-    fn convert_chunk(&self, chunk: Vec<u8>) -> Self {
-        match self {
-            Self::Integer64(_) => Self::Integer64(<i64>::from_be_bytes(
-                chunk.try_into().expect("ouai ouai ouai ouai"),
-            )),
-            Self::Integer32(_) => Self::Integer32(<i32>::from_be_bytes(
-                chunk.try_into().expect("ouai ouai ouai ouai"),
-            )),
-            Self::Text(_) => Self::Text(chunk.iter().map(|i| *i as char).collect::<String>()),
-        }
-    }
+
+// impl Default for FileHeader {
+//     fn default() -> Self {
+//         Self {
+//             version: 0,
+//             begin: 0,
+//             end: 0,
+//             seekfree: 0,
+//             nbytesfree: 0,
+//             // nfree this is 4 bytes and should be skippd apparently ?
+//             nbytesname: 0,
+//             units: 0,
+//             compress: 0,
+//             seekinfo: 0,
+//             nbytesinfo: 0,
+//         }
+//     }
+// }
+
+// Should it be named TFile instead ?
+struct RootFile {
+    header: FileHeader,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let reader = BufReader::new(File::open(&args.root_file).expect("Unable to open root_file"));
+    let mut reader = BufReader::new(File::open(&args.root_file).expect("Unable to open root_file"));
 
-    // let header_format = String::from(">4sii iiiiiBiiiH16s");
+    // let header_format = String::from(">4s i i i i i i i B i i i H 16s");
 
-    let header_entries = [
-        (Entry::Text(String::new()), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 1),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-        (Entry::Integer32(0), 4),
-    ];
+    let mut file = FileHeader::default();
 
-    let mut bytes = reader.bytes();
+    let mut buf = [0; 4];
+    reader.read(&mut buf[..]).unwrap();
+    // println!("{}", );
+    // file.magic = std::str::from_utf8(&buf).unwrap();
 
-    for header_entry in header_entries {
-        let mut byte_chunk: Vec<u8> = vec![];
+    reader.read(&mut buf[..]).unwrap();
 
-        for _ in 0..header_entry.1 {
-            if let Some(byte) = bytes.next() {
-                byte_chunk.push(byte.unwrap());
-            }
-        }
-        let test = header_entry.0.convert_chunk(byte_chunk);
+    file.version = i32::from_be_bytes(buf);
 
-        println!("{:?}", test);
-    }
+    let is_big = file.version > 1_000_000;
+    let mut big_buf: Vec<u8> = Vec::new();
+    big_buf.resize(if is_big { 67 } else { 55 }, 0);
+    let cursor_shift = if is_big { 2 } else { 1 };
+
+    reader.read(&mut big_buf[..]).unwrap();
+
+    println!("{:?}", big_buf);
+
+    let mut cursor = 4;
+    file.begin = i32::from_be_bytes(big_buf[0..cursor].try_into().unwrap());
+
+
+    file.end = i32::from_be_bytes(
+        big_buf[cursor..(cursor + 4 * cursor_shift)]
+            .try_into()
+            .unwrap(),
+    );
+    cursor += 4 * cursor_shift;
+    file.seekfree = i64::from_be_bytes(
+        big_buf[cursor..(cursor + 4 * cursor_shift)]
+            .try_into()
+            .unwrap(),
+    );
+    cursor += 4 * cursor_shift;
+    file.nbytesfree = i32::from_be_bytes(big_buf[cursor..cursor + 4].try_into().unwrap());
+    cursor += 8; // skipping nfree 
+    file.nbytesname = i32::from_be_bytes(big_buf[cursor..cursor + 4].try_into().unwrap()); //i32 ????? name ???
+    cursor += 4;
+    file.units = i8::from_be_bytes(big_buf[cursor..cursor + 1].try_into().unwrap());
+    cursor += 1;
+    file.compress = i32::from_be_bytes(big_buf[cursor..cursor + 4].try_into().unwrap());
+    cursor += 4;
+    file.seekinfo = i64::from_be_bytes(
+        big_buf[cursor..(cursor + 4 * cursor_shift)]
+            .try_into()
+            .unwrap(),
+    );
+    cursor += 4 * cursor_shift;
+
+    file.nbytesinfo = i32::from_be_bytes(big_buf[cursor..cursor + 4].try_into().unwrap());
+    // cursor += 4;
+
+    println!("{:?}", file);
+
+    // seekfree: i64,
+    // nbytesfree: i32,
+    // // nfree this is 4 bytes and should be skippd apparently ?
+    // nbytesname: i32,
+    // units: i8,
+    // compress: i32,
+    // seekinfo: i64,
+    // nbytesinfo: i32,
 }
 
 //         self._file_path = file._file_path
@@ -87,7 +160,7 @@ fn main() {
 //         self._fUUID = file._fUUID
 
 // _file_header_fields_small = struct.Struct(">4siiiiiiiBiiiH16s") 32 bits ?
-// _file_header_fields_big = struct.Struct(">4siiqqiiiBiqiH16s") 64 bits ?
+// _file_header_fields_big = struct.Struct(">4s i i q q i i i B i q i H 1 6 s") 64 bits ?
 
 // begin chunk size = 403   (the smallest a root file can be)
 
@@ -141,3 +214,57 @@ fn main() {
 //          nbytes += 18; // fUUID.Sizeof();
 //          // assume that the file may be above 2 Gbytes if file version is > 4
 //          if (this.fVersion >= 40000)
+
+// if self._fSeekKeys == 0:
+//             self._header_key = None
+//             self._keys = []
+//             self._keys_lookup = {}
+//             self._len = None
+//         else:
+//             keys_start = self._fSeekKeys
+//             keys_stop = min(keys_start + self._fNbytesKeys + 8, file.fEND)
+//             keys_cursor = uproot.source.cursor.Cursor(self._fSeekKeys)
+
+//             self.hook_before_read_keys(
+//                 chunk=chunk, cursor=cursor, keys_cursor=keys_cursor
+//             )
+
+//             if (keys_start, keys_stop) in chunk:
+//                 keys_chunk = chunk
+//             else:
+//                 # Chunk will not be retained; we don't have to detach_memmap()
+//                 keys_chunk = file.chunk(keys_start, keys_stop)
+
+//             self.hook_before_header_key(
+//                 chunk=chunk,
+//                 cursor=cursor,
+//                 keys_chunk=keys_chunk,
+//                 keys_cursor=keys_cursor,
+//             )
+
+//             # header_key is never used, but we do need to seek past it
+//             ReadOnlyKey(keys_chunk, keys_cursor, {}, file, self, read_strings=True)
+
+//             num_keys = keys_cursor.field(
+//                 keys_chunk, _directory_format_num_keys, context
+//             )
+
+//             self.hook_before_keys(
+//                 chunk=chunk,
+//                 cursor=cursor,
+//                 keys_chunk=keys_chunk,
+//                 keys_cursor=keys_cursor,
+//                 num_keys=num_keys,
+//             )
+
+//             self._keys = []
+//             self._keys_lookup = {}
+//             for _ in range(num_keys):
+//                 key = ReadOnlyKey(
+//                     keys_chunk, keys_cursor, {}, file, self, read_strings=True
+//                 )
+//                 name = key.fName
+//                 if name not in self._keys_lookup:
+//                     self._keys_lookup[name] = []
+//                 self._keys_lookup[name].append(len(self._keys))
+//                 self._keys.append(key)
