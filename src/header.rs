@@ -4,19 +4,19 @@ struct HeaderParser<'a> {
     buffer: &'a [u8],
 
     pos: usize,
-    multiplier: usize,
+    is_big: bool,
 }
 
 impl<'a> HeaderParser<'a> {
-    pub fn new(is_big: bool, buffer: &'a [u8]) -> Self {
+    fn new(is_big: bool, buffer: &'a [u8]) -> Self {
         Self {
             buffer,
             pos: 0,
-            multiplier: if is_big { 2 } else { 1 },
+            is_big,
         }
     }
 
-    pub fn read_u32(&mut self) -> Result<u32, HeaderParsingError> {
+    fn read_u32(&mut self) -> Result<u32, HeaderParsingError> {
         let val = u32::from_be_bytes(
             self.buffer[self.pos..self.pos + 4]
                 .try_into()
@@ -27,7 +27,7 @@ impl<'a> HeaderParser<'a> {
     }
 
     fn read_u64_auto(&mut self) -> Result<u64, HeaderParsingError> {
-        if self.multiplier == 1 {
+        if !self.is_big {
             let val = u32::from_be_bytes(
                 self.buffer[self.pos..self.pos + 4]
                     .try_into()
@@ -56,9 +56,37 @@ impl<'a> HeaderParser<'a> {
         Ok(val)
     }
 
+    fn read_u16(&mut self) -> Result<u16, HeaderParsingError> {
+        let val = u16::from_be_bytes(
+            self.buffer[self.pos..self.pos + 2]
+                .try_into()
+                .map_err(|_| HeaderParsingError::InvalidI16)?,
+        );
+        self.pos += 2;
+        Ok(val)
+    }
+
+    fn read(&mut self, size: usize) -> &[u8] {
+        let val = &self.buffer[self.pos..self.pos + size];
+        self.pos += size;
+        val
+    }
+
     fn skip(&mut self, n: usize) -> &mut Self {
         self.pos += n;
         self
+    }
+
+    fn uuid_hex(buf: &[u8]) -> String {
+        let formatted = buf.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        format!(
+            "{}-{}-{}-{}-{}",
+            &formatted[0..8],
+            &formatted[8..12],
+            &formatted[12..16],
+            &formatted[16..20],
+            &formatted[20..32]
+        )
     }
 }
 
@@ -67,6 +95,7 @@ pub enum HeaderParsingError {
     InvalidMagic,
     UnexpectedFileSize,
     InvalidI8,
+    InvalidI16,
     InvalidI32,
     InvalidI64,
 }
@@ -84,6 +113,8 @@ pub struct FileHeader {
     compress: u32,
     seekinfo: u64,
     nbytesinfo: u32,
+    uuidversion: u16,
+    uuid: String,
 }
 
 impl FileHeader {
@@ -104,10 +135,11 @@ impl FileHeader {
         let version = u32::from_be_bytes(buf);
 
         let is_big = version > 1_000_000;
-        let mut buf: Vec<u8> = vec![0; if is_big { 63 } else { 51 }];
+        let mut buf: Vec<u8> = vec![0; if is_big { 67 } else { 55 }];
         reader
             .read_exact(&mut buf[..])
             .map_err(|_| HeaderParsingError::UnexpectedFileSize)?;
+
         let mut parser = HeaderParser::new(is_big, &buf);
 
         Ok(Self {
@@ -121,6 +153,8 @@ impl FileHeader {
             compress: parser.read_u32()?,
             seekinfo: parser.read_u64_auto()?,
             nbytesinfo: parser.read_u32()?,
+            uuidversion: parser.read_u16()?,
+            uuid: HeaderParser::uuid_hex(parser.read(16)),
         })
     }
 }
